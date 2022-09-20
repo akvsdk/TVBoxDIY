@@ -6,6 +6,14 @@ on:
 #      - main
 #  pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: 23 17 * * 5
+
+env:
+  UPLOAD_COWTRANSFER: true
+  UPLOAD_WETRANSFER: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
 
 jobs:
   build:
@@ -38,3 +46,56 @@ jobs:
         with:
           name: com.github.tvbox.osc
           path: ${{ github.workspace }}/apk/*
+
+      - name: 上传固件到NN网盘
+              id: cowtransfer
+              if: env.UPLOAD_COWTRANSFER == 'true'
+              run: |
+                curl -fsSL git.io/file-transfer | sh
+                ./transfer cow --block 2621440 -s -p 64 --no-progress ${{ github.workspace }}/apk/* 2>&1 | tee cowtransfer.log
+                echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
+                echo "::set-output name=url::$(cat cowtransfer.log | grep https | cut -f3 -d" ")"
+
+      - name: 上传固件到WT网盘
+              id: wetransfer
+              if: env.UPLOAD_WETRANSFER == 'true'
+              run: |
+                curl -fsSL git.io/file-transfer | sh
+                ./transfer wet -s -p 16 --no-progress ${{ github.workspace }}/apk/* 2>&1 | tee wetransfer.log
+                echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
+                echo "::set-output name=url::$(cat wetransfer.log | grep https | cut -f3 -d" ")"
+
+      - name: 创建release标签
+        id: tag
+        run: |
+          echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
+          touch release.txt
+          echo "一款电视软件" >> release.txt
+          echo "[APK源码](https://github.com/takagen99/Box)" >> release.txt
+          echo "📥 APK下载" >> release.txt
+          [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [国内NN网盘](${{ steps.cowtransfer.outputs.url }})" >> release.txt
+          [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [国外WT网盘](${{ steps.wetransfer.outputs.url }})" >> release.txt
+          echo "::set-output name=status::success"
+
+      - name: 发布至release
+        uses: softprops/action-gh-release@master
+        if: steps.tag.outputs.status == 'success' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        with:
+          name: 「 Tvbox 」${{ steps.tag.outputs.release_tag }}
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ github.workspace }}/apk/*
+
+      - name: 删除旧的Releases
+        uses: dev-drprasad/delete-older-releases@v0.1.0
+        if: env.UPLOAD_RELEASE == 'true'
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: TG notification #TG推送
+        run: curl "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=恭喜主人tvbox 编译完成！  WeTransfer：${{ steps.wetransfer.outputs.url }}"
